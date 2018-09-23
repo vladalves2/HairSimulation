@@ -11,29 +11,30 @@
     BSD-style license that can be found in the LICENSE.txt file.
 */
 
-#include <nanogui/opengl.h>
-#include <nanogui/glutil.h>
-#include <nanogui/screen.h>
-#include <nanogui/window.h>
-#include <nanogui/layout.h>
-#include <nanogui/label.h>
-#include <nanogui/checkbox.h>
 #include <nanogui/button.h>
-#include <nanogui/toolbutton.h>
-#include <nanogui/popupbutton.h>
+#include <nanogui/checkbox.h>
+#include <nanogui/colorwheel.h>
 #include <nanogui/combobox.h>
-#include <nanogui/progressbar.h>
 #include <nanogui/entypo.h>
-#include <nanogui/messagedialog.h>
-#include <nanogui/textbox.h>
-#include <nanogui/slider.h>
+#include <nanogui/formhelper.h>
+#include <nanogui/glcanvas.h>
+#include <nanogui/glutil.h>
+#include <nanogui/graph.h>
 #include <nanogui/imagepanel.h>
 #include <nanogui/imageview.h>
-#include <nanogui/vscrollpanel.h>
-#include <nanogui/colorwheel.h>
-#include <nanogui/graph.h>
+#include <nanogui/label.h>
+#include <nanogui/layout.h>
+#include <nanogui/messagedialog.h>
+#include <nanogui/toolbutton.h>
+#include <nanogui/opengl.h>
+#include <nanogui/popupbutton.h>
+#include <nanogui/progressbar.h>
+#include <nanogui/screen.h>
+#include <nanogui/slider.h>
 #include <nanogui/tabwidget.h>
-#include <nanogui/glcanvas.h>
+#include <nanogui/textbox.h>
+#include <nanogui/vscrollpanel.h>
+#include <nanogui/window.h>
 #include <iostream>
 #include <string>
 
@@ -41,6 +42,7 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <iomanip>
 
 #if defined(__GNUC__)
 #  pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -63,6 +65,14 @@
 #  include <windows.h>
 #endif
 
+#include "HairSolver/HairGeo.h"
+#include "HairSolver/HairCreator.h"
+
+const double mPI = 3.14159265358979323846;
+const double mHalfPI = mPI * 0.5;
+
+HairGeo sHair;
+
 using std::cout;
 using std::cerr;
 using std::endl;
@@ -74,76 +84,90 @@ using std::to_string;
 
 class MyGLCanvas : public nanogui::GLCanvas {
 public:
-    MyGLCanvas(Widget *parent) : nanogui::GLCanvas(parent), mRotation(nanogui::Vector3f(0.25f, 0.5f, 0.33f)) {
-        using namespace nanogui;
+	Eigen::Vector3f mRotation;
+	float mZoom;
 
-        mShader.init(
-            /* An identifying name */
-            "a_simple_shader",
+	MyGLCanvas(Widget *parent) : nanogui::GLCanvas(parent), mRotation(nanogui::Vector3f(0, 0, 0)), mZoom(1.0f), mDragging(false), mRootColor(nanogui::Color(237,207,180,255)), mTipColor(nanogui::Color(123,0,0,255)) {
+		using namespace nanogui;
 
-            /* Vertex shader */
-            "#version 330\n"
-            "uniform mat4 modelViewProj;\n"
-            "in vec3 position;\n"
-            "in vec3 color;\n"
-            "out vec4 frag_color;\n"
-            "void main() {\n"
-            "    frag_color = 3.0 * modelViewProj * vec4(color, 1.0);\n"
-            "    gl_Position = modelViewProj * vec4(position, 1.0);\n"
-            "}",
+		mShader.init(
+			/* An identifying name */
+			"a_simple_shader",
 
-            /* Fragment shader */
-            "#version 330\n"
-            "out vec4 color;\n"
-            "in vec4 frag_color;\n"
-            "void main() {\n"
-            "    color = frag_color;\n"
-            "}"
-        );
+			/* Vertex shader */
+			"#version 330\n"
+			"uniform mat4 modelViewProj;\n"
+			"in vec3 position;\n"
+			"in vec3 color;\n"
+			"out vec4 frag_color;\n"
+			"void main() {\n"
+			"    frag_color = vec4(color, 1.0);\n"
+			"    gl_Position = modelViewProj * vec4(position, 1.0);\n"
+			"}",
 
-        MatrixXu indices(3, 12); /* Draw a cube */
-        indices.col( 0) << 0, 1, 3;
-        indices.col( 1) << 3, 2, 1;
-        indices.col( 2) << 3, 2, 6;
-        indices.col( 3) << 6, 7, 3;
-        indices.col( 4) << 7, 6, 5;
-        indices.col( 5) << 5, 4, 7;
-        indices.col( 6) << 4, 5, 1;
-        indices.col( 7) << 1, 0, 4;
-        indices.col( 8) << 4, 0, 3;
-        indices.col( 9) << 3, 7, 4;
-        indices.col(10) << 5, 6, 2;
-        indices.col(11) << 2, 1, 5;
+			/* Fragment shader */
+			"#version 330\n"
+			"out vec4 color;\n"
+			"in vec4 frag_color;\n"
+			"void main() {\n"
+			"    color = frag_color;\n"
+			"}"
+		);
 
-        MatrixXf positions(3, 8);
-        positions.col(0) << -1,  1,  1;
-        positions.col(1) << -1,  1, -1;
-        positions.col(2) <<  1,  1, -1;
-        positions.col(3) <<  1,  1,  1;
-        positions.col(4) << -1, -1,  1;
-        positions.col(5) << -1, -1, -1;
-        positions.col(6) <<  1, -1, -1;
-        positions.col(7) <<  1, -1,  1;
+		setHair();
+	}
 
-        MatrixXf colors(3, 12);
-        colors.col( 0) << 1, 0, 0;
-        colors.col( 1) << 0, 1, 0;
-        colors.col( 2) << 1, 1, 0;
-        colors.col( 3) << 0, 0, 1;
-        colors.col( 4) << 1, 0, 1;
-        colors.col( 5) << 0, 1, 1;
-        colors.col( 6) << 1, 1, 1;
-        colors.col( 7) << 0.5, 0.5, 0.5;
-        colors.col( 8) << 1, 0, 0.5;
-        colors.col( 9) << 1, 0.5, 0;
-        colors.col(10) << 0.5, 1, 0;
-        colors.col(11) << 0.5, 1, 0.5;
+	void setHairColor() {
+		sHair.resetIter();
+
+		HairVertex vtx;
+
+		auto numPoints = sHair.numPoints();
+		nanogui::MatrixXf colors(3, numPoints);		
+		
+		for (auto i = 0u; i < numPoints; i++) {
+			sHair >> vtx;
+			nanogui::Color c = mRootColor * (1 - vtx.t) + mTipColor * vtx.t;
+			colors.col(vtx.id) << c.r(), c.g(), c.b();
+		}
+		
+		mShader.bind();
+		mShader.uploadAttrib("color", colors);
+	}
+
+	void setHair(){
+		sHair = HairCreator::createRadialHair(0, 1000, 5, 0.3f);		
+
+		auto numSegments = sHair.numSegments();
+		auto numPoints = sHair.numPoints();
+
+		sHair.resetIter();
+
+		using namespace nanogui;
+       
+		MatrixXu indices(2, numSegments);
+		MatrixXf colors(3, numPoints);
+		MatrixXf positions(3, numPoints);
+
+		HairSegment segment;
+		for (auto segId = 0u; segId < numSegments; segId++) {			
+			sHair >> segment;
+			indices.col(segId) << segment.a.id, segment.b.id;
+		}
+
+		setHairColor();
+
+		Eigen::Vector3f point;
+		sHair.resetIter();
+		
+		for (auto pid = 0u; pid < numPoints; pid++) {
+			sHair >> point;
+			positions.col(pid) << point(0), point(1), point(2);
+		}
 
         mShader.bind();
         mShader.uploadIndices(indices);
-
-        mShader.uploadAttrib("position", positions);
-        mShader.uploadAttrib("color", colors);
+        mShader.uploadAttrib("position", positions);        
     }
 
     ~MyGLCanvas() {
@@ -161,50 +185,193 @@ public:
 
         Matrix4f mvp;
         mvp.setIdentity();
-        float fTime = (float)glfwGetTime();
+		float fTime = 1;// (float)glfwGetTime();
         mvp.topLeftCorner<3,3>() = Eigen::Matrix3f(Eigen::AngleAxisf(mRotation[0]*fTime, Vector3f::UnitX()) *
                                                    Eigen::AngleAxisf(mRotation[1]*fTime,  Vector3f::UnitY()) *
-                                                   Eigen::AngleAxisf(mRotation[2]*fTime, Vector3f::UnitZ())) * 0.25f;
+                                                   Eigen::AngleAxisf(mRotation[2]*fTime, Vector3f::UnitZ())) * mZoom;
 
         mShader.setUniform("modelViewProj", mvp);
 
         glEnable(GL_DEPTH_TEST);
-        /* Draw 12 triangles starting at index 0 */
-        mShader.drawIndexed(GL_TRIANGLES, 0, 12);
+        /* Draw numSegments segments starting at index 0 */
+		auto numSegments = sHair.numSegments();
+        mShader.drawIndexed(GL_LINES, 0, numSegments);
         glDisable(GL_DEPTH_TEST);
     }
 
+	virtual bool mouseButtonEvent(const nanogui::Vector2i &p, int button, bool down, int modifiers) override {
+		if (!down) mDragging = false;
+
+		if (nanogui::GLCanvas::mouseButtonEvent(p, button, down, modifiers)) return true;
+
+		if (button == GLFW_MOUSE_BUTTON_1) {
+			if (down) {
+				mClickPoint = p;
+				mInitRotation = mRotation;
+				mDragging = true;
+			}
+			return true;
+		}
+		return false;
+	}
+
+	virtual bool mouseMotionEvent(const nanogui::Vector2i &p, const nanogui::Vector2i &rel, int button, int modifiers) override {
+		if (mDragging) {
+			float sensibility = 0.02f;
+			auto diff = p - mClickPoint;
+			Eigen::Vector3f delta(-sensibility * (float)diff.y(), -sensibility * (float)diff.x(), 0);
+			mRotation = mInitRotation + delta;
+
+			if (mRotation.x() > (float)mHalfPI) mRotation[0] = (float)mHalfPI;
+			else if (mRotation.x() < -(float)mHalfPI) mRotation[0] = -(float)mHalfPI;
+
+			return true;
+		}
+		return false;
+	}
+
+	virtual bool scrollEvent(const nanogui::Vector2i &p, const nanogui::Vector2f &rel) override {
+		if (nanogui::GLCanvas::scrollEvent(p, rel)) return true;
+		mZoom *= (1 + rel.y()*0.1f);
+		return true;
+	}
+
+	void setRootColor(const nanogui::Color &c) {
+		mRootColor = c;
+		setHairColor();
+	}
+	const nanogui::Color & getRootColor() const {
+		return mRootColor;
+	}
+	void setTipColor(const nanogui::Color &c) {
+		mTipColor = c;
+		setHairColor();
+	}
+	const nanogui::Color & getTipColor() const {
+		return mTipColor;
+	}
 private:
     nanogui::GLShader mShader;
-    Eigen::Vector3f mRotation;
+	bool mDragging;
+	nanogui::Vector2i mClickPoint;
+	Eigen::Vector3f mInitRotation;
+	nanogui::Color mRootColor;
+	nanogui::Color mTipColor;
 };
 
 
+class FloatField : public nanogui::Widget {
+public:
+	FloatField(nanogui::Widget *parent, const std::string &label, float value, float min, float max) : nanogui::Widget(parent) {
+		setLayout(new nanogui::BoxLayout(nanogui::Orientation::Horizontal, nanogui::Alignment::Fill, 0, 0));
+
+		new nanogui::Label(this, label);
+		auto slider = new nanogui::Slider(this);
+		slider->setRange(std::pair<float, float>(min, max));
+		slider->setValue(value);
+		auto txtBox = new nanogui::TextBox(this);
+		slider->setCallback([txtBox](float v) {
+			std::stringstream stream;
+			stream << std::fixed << std::setprecision(2) << v;
+			txtBox->setValue(stream.str());
+		});
+		(slider->callback())(value);
+	}
+};
+
 class ExampleApplication : public nanogui::Screen {
 public:
-    ExampleApplication() : nanogui::Screen(Eigen::Vector2i(800, 600), "NanoGUI Test", false) {
+    ExampleApplication() : nanogui::Screen(Eigen::Vector2i(1200, 1000), "Vladimir - Simulation Demo", false) {
         using namespace nanogui;
 
-        Window *window = new Window(this, "GLCanvas Demo");
-        window->setPosition(Vector2i(15, 15));
-        window->setLayout(new GroupLayout());
+		auto winLay = new AdvancedGridLayout();
+		
+        Window *window = new Window(this, "Viewport");
+        window->setPosition(Vector2i(15, 15));		
+		//window->setLayout(new GroupLayout());
+		window->setLayout(winLay);
+		
+		winLay->appendCol(0, 1);
+		winLay->appendCol(0, 1);
+		winLay->appendRow(0, 1);
+		winLay->appendCol(0, 1);
+		winLay->appendCol(0, 1);
+		winLay->appendRow(0, 1);
 
         mCanvas = new MyGLCanvas(window);
         mCanvas->setBackgroundColor({100, 100, 100, 255});
-        mCanvas->setSize({400, 400});
+        mCanvas->setSize({ 800, 800 });
+		
+		winLay->setAnchor(mCanvas, AdvancedGridLayout::Anchor(0, 0));// , 0, 0, Alignment::Middle, Alignment::Middle));
 
+		auto tabLay = new AdvancedGridLayout();
+		tabLay->appendCol(0, 1);
+		tabLay->appendRow(0, 1);
+		tabLay->appendRow(0, 1);
+	
         Widget *tools = new Widget(window);
-        tools->setLayout(new BoxLayout(Orientation::Horizontal,
-                                       Alignment::Middle, 0, 5));
+		tools->setLayout(tabLay);// new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
 
-        Button *b0 = new Button(tools, "Random Color");
-        b0->setCallback([this]() { mCanvas->setBackgroundColor(Vector4i(rand() % 256, rand() % 256, rand() % 256, 255)); });
+		mTabChooser = new ComboBox(tools, { "Solver","Display" });
+		//mTabChooser->setFixedHeight(20);
+		mTabChooser->setCallback(
+			[this](int i) {
+				for (auto &tab : this->mTabs) {
+					tab->setVisible(false);
+					tab->setEnabled(false);
+				}
+				this->mTabs[this->mTabChooser->selectedIndex()]->setVisible(true);
+				this->mTabs[this->mTabChooser->selectedIndex()]->setEnabled(true);				
+			}
+		);
 
-        Button *b1 = new Button(tools, "Random Rotation");
-        b1->setCallback([this]() { mCanvas->setRotation(nanogui::Vector3f((rand() % 100) / 100.0f, (rand() % 100) / 100.0f, (rand() % 100) / 100.0f)); });
+		tabLay->setAnchor(mTabChooser, AdvancedGridLayout::Anchor(0, 0, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
 
-        performLayout();
+		{
+			Widget *props = new Widget(tools);
+			props->setLayout(new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
+
+			new FloatField(props, "Timestep", 5.0f, 1.0f, 10.0f);
+			new FloatField(props, "Gravity Y", -9.81f, -10.0f, 10.0f);		
+
+			mTabs[0] = props;
+			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
+		}
+		
+
+		{
+			Widget *props = new Widget(tools);
+			props->setLayout(new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
+
+			new Label(props, "Background");
+			(new nanogui::ColorWheel(props, mCanvas->backgroundColor()))->setCallback([this](nanogui::Color c) { mCanvas->setBackgroundColor(c); });
+			
+			new Label(props, "Root");
+			(new nanogui::ColorWheel(props, mCanvas->getRootColor()))->setCallback([this](nanogui::Color c) { mCanvas->setRootColor(c); });
+
+			new Label(props, "Tip");
+			(new nanogui::ColorWheel(props, mCanvas->getTipColor()))->setCallback([this](nanogui::Color c) { mCanvas->setTipColor(c); });
+
+			mTabs[1] = props;
+			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
+		}
+
+		winLay->setAnchor(tools, AdvancedGridLayout::Anchor(1, 0 , nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
+
+		Widget *playbackPanel = new Widget(window);
+		playbackPanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Minimum, 0, 0));
+
+		new Button(playbackPanel, "Reset");
+		new Button(playbackPanel, "Play/Pause");
+
+		winLay->setAnchor(playbackPanel, AdvancedGridLayout::Anchor(0, 1, 2, 1,nanogui::Alignment::Fill, nanogui::Alignment::Fill));
+
+        performLayout();		
+
+		(mTabChooser->callback())(0);
+		//mTabs[1]->setVisible(false);
     }
+
 
     virtual bool keyboardEvent(int key, int scancode, int action, int modifiers) {
         if (Screen::keyboardEvent(key, scancode, action, modifiers))
@@ -221,7 +388,10 @@ public:
         Screen::draw(ctx);
     }
 private:
+	static const int mNumTabs = 2;
     MyGLCanvas *mCanvas;
+	Widget * mTabs[mNumTabs];
+	nanogui::ComboBox * mTabChooser;
 };
 
 int main(int /* argc */, char ** /* argv */) {
