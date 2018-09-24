@@ -38,4 +38,5 @@ public:
 
 	unsigned int numSegments() const;
 	unsigned int numPoints() const;
+	unsigned int numStrands() const;
 };

@@ -111,3 +111,9 @@ unsigned int HairGeo::numSegments() const {
 unsigned int HairGeo::numPoints() const {
 	return points.size();
 }
+
+unsigned int HairGeo::numStrands() const {
+	auto n = offsets.size();
+	if (n > 0) n--;
+	return (unsigned int)n;
+}
