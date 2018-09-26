@@ -20,6 +20,12 @@ HairGeo & HairGeo::operator= (const std::vector<Eigen::Vector3f> &src) {
 	return *this;
 }
 
+void HairGeo::clear() {
+	resetIter();
+	offsets.clear();
+	points.clear();
+}
+
 void HairGeo::resetIter() {
 	pointIter = 0;
 	strandIter = 0;

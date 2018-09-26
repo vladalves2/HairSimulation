@@ -1,4 +1,5 @@
 #include "HairSolver.h"
+#include <iostream>
 
 HairDoF::HairDoF() {}
 
@@ -7,20 +8,15 @@ HairDoF_Points::HairDoF_Points() {}
 HairDoF_Points & HairDoF_Points::operator= (const HairGeo&o) {
 	auto nPs = o.numPoints();
 	auto nStrands = o.numStrands();
-
 	mDof.resize(nPs * 3);
 	mDofPrev.resize(nPs * 3);
 	mTopology.resize(nStrands + 1);
-
 	for (auto i = 0u; i <= nStrands; i++)
 		mTopology[i] = o.offsets[i];
-
-	for (auto i = 0u; i <= nPs; i++) {
+	for (auto i = 0u; i < nPs; i++) {
 		Eigen::Map<Eigen::Vector3f>(mDof.data() + i * 3) = o.points[i];
 	}
-
 	mDofPrev = mDof;
-
 	return *this;
 }
 
@@ -43,7 +39,7 @@ void HairDoF_Points::advance(float timestep, float gravity) {
 
 
 
-HairModel::HairModel() : mTimestep(0.005f), mGravity(-9.81f), mSegmentLength(0.05f){}
+HairModel::HairModel() : mTimestep(0.005f), mGravity(-9.81f), mSegmentLength(0.02f){}
 
 void HairModel::step(HairDoF &dof) const {
 	dof.advance(mTimestep, mGravity);
@@ -66,7 +62,7 @@ void HairModel_FollowTheLeader::solve(HairDoF &dof) const {
 			Eigen::Map<Eigen::Vector3f> pPrev(dof.mDofPrev.data() + start * 3);
 
 			pNow = pPrev;
-		}
+		} 
 
 		for (int pid = start + 1; pid < end; pid++) {
 			Eigen::Map<Eigen::Vector3f> A(dof.mDof.data() + (pid-1) * 3);
@@ -75,11 +71,14 @@ void HairModel_FollowTheLeader::solve(HairDoF &dof) const {
 			Eigen::Vector3f oldB = B;
 
 			Eigen::Vector3f seg = (B - A);
-			seg.normalize();
-			B = A + seg * mSegmentLength;
-			
-			Eigen::Map<Eigen::Vector3f> APrev(dof.mDofPrev.data() + (pid-1) * 3);
-			APrev += (B - oldB);
+			float currentLen = seg.norm();
+			if (currentLen > mSegmentLength) {
+				seg.normalize();
+				B = A + seg * mSegmentLength;
+
+				Eigen::Map<Eigen::Vector3f> APrev(dof.mDofPrev.data() + (pid - 1) * 3);
+				APrev += (B - oldB);
+			}
 		}
 	}
 }

@@ -33,6 +33,8 @@ public:
 	void operator>>(HairVertex &vtx);
 	void operator>>(Eigen::Vector3f &p);
 
+	void clear();
+
 	void resetIter();
 	void resize(std::vector<unsigned int> &offs);
 

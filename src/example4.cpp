@@ -77,8 +77,6 @@ const double mHalfPI = mPI * 0.5;
 std::atomic<bool> sRunning{ false };
 std::atomic<bool> sSimulationDirty{ false };
 
-HairGeo sHair;
-
 HairDoF_Points sHairPoints;
 HairModel_FollowTheLeader sHairModel;
 
@@ -90,13 +88,33 @@ using std::vector;
 using std::pair;
 using std::to_string;
 
+class LogInfo {
+public:
+	LogInfo() : simulationTime(0), processingTime(0), frame(0){}
+
+	float simulationTime;
+	float processingTime;
+	unsigned int frame;
+
+};
+
+std::vector<LogInfo> sSimulationLog;
+
+class MyGLCanvas;
+void staticSetHair(MyGLCanvas *);
+void run(MyGLCanvas * app, std::atomic<bool>& simDirty, std::atomic<bool>& program_is_running, unsigned int update_interval_millisecs);
+
 class MyGLCanvas : public nanogui::GLCanvas {
 public:
+	std::thread simulationThread;
+
+	HairGeo mHair;
 	Eigen::Vector3f mRotation;
 	float mZoom;
+	unsigned int mNumStrands;
+	unsigned int mPointsPerStrand;
 
-	MyGLCanvas(Widget *parent) : nanogui::GLCanvas(parent), mRotation(nanogui::Vector3f(0, 0, 0)), mZoom(1.0f), mDragging(false), mRootColor(nanogui::Color(237,207,180,255)), mTipColor(nanogui::Color(123,0,0,255)) {
-		using namespace nanogui;
+	MyGLCanvas(Widget *parent) : nanogui::GLCanvas(parent), mRotation(nanogui::Vector3f(0, 0, 0)), mZoom(1.0f), mDragging(false), mRootColor(nanogui::Color(237,207,180,255)), mTipColor(nanogui::Color(123,0,0,255)), mStepsPerSecLabel(nullptr), mNumStrands(1000), mPointsPerStrand(10){
 
 		mShader.init(
 			/* An identifying name */
@@ -125,8 +143,14 @@ public:
 		setHair();
 	}
 	void setHairPositions(HairDoF_Points &hair) {
+		auto numPts = hair.mDof.size()/3;
+		nanogui::MatrixXf positions(3, numPts);
+
+		for (auto i = 0u; i < numPts; i++)
+			positions.col(i) << hair.mDof[i * 3], hair.mDof[i * 3 + 1], hair.mDof[i * 3 + 2];
+
 		mShader.bind();
-		mShader.uploadAttrib("position", hair.mDof);
+		mShader.uploadAttrib("position", positions);
 		sSimulationDirty = false;
 	}
 
@@ -146,15 +170,15 @@ public:
 	}
 
 	void setHairColor() {
-		sHair.resetIter();
+		mHair.resetIter();
 
 		HairVertex vtx;
 
-		auto numPoints = sHair.numPoints();
+		auto numPoints = mHair.numPoints();
 		nanogui::MatrixXf colors(3, numPoints);		
 		
 		for (auto i = 0u; i < numPoints; i++) {
-			sHair >> vtx;
+			mHair >> vtx;
 			nanogui::Color c = mRootColor * (1 - vtx.t) + mTipColor * vtx.t;
 			colors.col(vtx.id) << c.r(), c.g(), c.b();
 		}
@@ -163,30 +187,29 @@ public:
 		mShader.uploadAttrib("color", colors);
 	}
 
-	void setHair(){
-		unsigned int nPointsInHair = 5;
-		sHair = HairCreator::createRadialHair(0, 1000, nPointsInHair, (nPointsInHair-1) * sHairModel.mSegmentLength);
+	void setHair() {
+		bool isSimulating = simulationThread.joinable();
+		if (isSimulating) RunOrPauseSimulation();
 
-		auto numSegments = sHair.numSegments();
+		mHair.clear();
+		mHair = HairCreator::createRadialHair(0, mNumStrands, mPointsPerStrand, (mPointsPerStrand -1) * sHairModel.mSegmentLength);
+		auto numSegments = mHair.numSegments();
 
-		sHair.resetIter();
+		mHair.resetIter();
 
 		nanogui::MatrixXu indices(2, numSegments);
 
 		HairSegment segment;
 		for (auto segId = 0u; segId < numSegments; segId++) {			
-			sHair >> segment;
+			mHair >> segment;
 			indices.col(segId) << segment.a.id, segment.b.id;
 		}
-
+		mShader.bind();
+		mShader.uploadIndices(indices);
 		setHairColor();
-		setHairPositions(sHair);
-
-        mShader.bind();
-        mShader.uploadIndices(indices);
-              
-
 		resetSolver();
+
+		if (isSimulating) RunOrPauseSimulation();
     }
 
     ~MyGLCanvas() {
@@ -197,9 +220,67 @@ public:
         mRotation = vRotation;
     }
 
+	void RunOrPauseSimulation() {
+		if (!simulationThread.joinable()) {
+			sRunning = true;
+			simulationThread = std::thread([this]() {run(std::ref(this), std::ref(sSimulationDirty), std::ref(sRunning), 17); });
+			//t.detach();
+		}
+		else {
+			sRunning = false;
+			simulationThread.join();
+		}
+	}
+
+	void step(std::atomic<bool>& simDirty) {
+		LARGE_INTEGER frequency;        // ticks per second
+		LARGE_INTEGER t1, t2;           // ticks
+		double elapsedTime;
+		QueryPerformanceFrequency(&frequency);
+		QueryPerformanceCounter(&t1);
+
+		sHairModel.step(sHairPoints);
+
+		QueryPerformanceCounter(&t2);
+		float processingTime = (t2.QuadPart - t1.QuadPart) * 1000.0 / frequency.QuadPart;
+
+		if (sSimulationLog.size() == 0) sSimulationLog.push_back(LogInfo());
+		LogInfo &prevInfo = sSimulationLog[sSimulationLog.size() - 1];
+		LogInfo info;
+		info.frame = prevInfo.frame + 1;
+		info.processingTime = processingTime;
+		info.simulationTime = prevInfo.simulationTime + sHairModel.mTimestep;
+
+		sSimulationLog.push_back(info);
+		simDirty = true;
+	}
+
     virtual void drawGL() override {
 		if (sSimulationDirty) {
 			setHairPositions(sHairPoints);
+		}
+
+		if (sSimulationLog.size() == 0) sSimulationLog.push_back(LogInfo());
+
+		/*if (mStepsPerSecLabel) {
+			float stepsPerFrame = 0;
+			if (sSimulationLog.size() > 1) {
+				LogInfo &lastLog = sSimulationLog[sSimulationLog.size() - 1];
+				stepsPerFrame = 17.0f / lastLog.processingTime;
+			}
+			std::stringstream stream;
+			stream << std::fixed << std::setprecision(1) << stepsPerFrame;
+			mStepsPerSecLabel->setCaption(stream.str());
+		}*/
+		if (mSimtPerStepLabel) {
+			LogInfo &lastLog = sSimulationLog[sSimulationLog.size() - 1];
+			std::stringstream stream;
+			stream << std::fixed << std::setprecision(1) << lastLog.processingTime;
+			mSimtPerStepLabel->setCaption(stream.str());
+		}
+		if (mStepsLabel) {
+			LogInfo &lastLog = sSimulationLog[sSimulationLog.size() - 1];
+			mStepsLabel->setCaption(std::to_string(lastLog.frame));
 		}
 
         using namespace nanogui;
@@ -212,12 +293,10 @@ public:
         mvp.topLeftCorner<3,3>() = Eigen::Matrix3f(Eigen::AngleAxisf(mRotation[0]*fTime, Vector3f::UnitX()) *
                                                    Eigen::AngleAxisf(mRotation[1]*fTime,  Vector3f::UnitY()) *
                                                    Eigen::AngleAxisf(mRotation[2]*fTime, Vector3f::UnitZ())) * mZoom;
-
         mShader.setUniform("modelViewProj", mvp);
-
         glEnable(GL_DEPTH_TEST);
         /* Draw numSegments segments starting at index 0 */
-		auto numSegments = sHair.numSegments();
+		auto numSegments = mHair.numSegments();
         mShader.drawIndexed(GL_LINES, 0, numSegments);
         glDisable(GL_DEPTH_TEST);
     }
@@ -275,8 +354,24 @@ public:
 	}
 
 	void resetSolver() {
-		sHairPoints = sHair;
+		mHair.resetIter();
+		sHairPoints = mHair;
+		sHairPoints.mDofPrev = sHairPoints.mDof;
+
 		setHairPositions(sHairPoints);
+		
+		sSimulationLog.clear();
+		sSimulationLog.push_back(LogInfo());
+	}
+
+	void setStepsPerSecLabel(nanogui::Label *l) {
+		mStepsPerSecLabel = l;
+	}
+	void setSimtimePerStepLabel(nanogui::Label *l) {
+		mSimtPerStepLabel = l;
+	}
+	void setStepsLabel(nanogui::Label *l) {
+		mStepsLabel = l;
 	}
 private:
     nanogui::GLShader mShader;
@@ -285,31 +380,38 @@ private:
 	Eigen::Vector3f mInitRotation;
 	nanogui::Color mRootColor;
 	nanogui::Color mTipColor;
+	nanogui::Label *mStepsPerSecLabel, *mStepsLabel, *mSimtPerStepLabel;
 };
 
+void staticSetHair(MyGLCanvas *c) {
+	c->setHair();
+}
 
-class FloatField : public nanogui::Widget {
+template <typename T>
+class TypeField : public nanogui::Widget {
 public:
-	FloatField(nanogui::Widget *parent, const std::string &label, float *attribute, float min, float max, float scale) : nanogui::Widget(parent) {
+	TypeField(nanogui::Widget *parent, const std::string &label, T *attribute, T min, T max, T scale, MyGLCanvas* canvas = nullptr, void (*callable) (MyGLCanvas *c) = 0) : nanogui::Widget(parent) {
 		setLayout(new nanogui::BoxLayout(nanogui::Orientation::Horizontal, nanogui::Alignment::Fill, 0, 0));
 
 		new nanogui::Label(this, label);
 		auto slider = new nanogui::Slider(this);
-		slider->setRange(std::pair<float, float>(min, max));
+		slider->setRange(std::pair<T, T>(min, max));
 		slider->setValue(*attribute / scale);
 		auto txtBox = new nanogui::TextBox(this);
-		slider->setCallback([txtBox, attribute, scale](float v) {
+		slider->setCallback([txtBox, attribute, scale, canvas, callable](T v) {
 			std::stringstream stream;
 			stream << std::fixed << std::setprecision(2) << v;
 			txtBox->setValue(stream.str());
 			*attribute = v * scale;
+			if (callable) callable(canvas);
+
 		});
-		(slider->callback())(*attribute / scale);
+		(slider->callback())((float)(*attribute / scale)); 		
 	}
 };
 
-class ExampleApplication;
-void run(ExampleApplication * app, std::atomic<bool>& simDirty, std::atomic<bool>& program_is_running, unsigned int update_interval_millisecs);
+typedef TypeField<float> FloatField;
+typedef TypeField<unsigned int> UintField;
 
 class ExampleApplication : public nanogui::Screen {
 public:
@@ -344,7 +446,7 @@ public:
         Widget *tools = new Widget(window);
 		tools->setLayout(tabLay);// new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
 
-		mTabChooser = new ComboBox(tools, { "Solver","Display" });
+		mTabChooser = new ComboBox(tools, { "Hair", "Solver","Display" });
 		//mTabChooser->setFixedHeight(20);
 		mTabChooser->setCallback(
 			[this](int i) {
@@ -363,11 +465,22 @@ public:
 			Widget *props = new Widget(tools);
 			props->setLayout(new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
 
+			new UintField(props, "N Hairs (x1000)", &mCanvas->mNumStrands, 1, 100, 1000, mCanvas, staticSetHair);
+			new UintField(props, "Points per Hair", &mCanvas->mPointsPerStrand, 2, 100, 1, mCanvas, staticSetHair);
+
+			mTabs[0] = props;
+			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
+		}
+
+		{
+			Widget *props = new Widget(tools);
+			props->setLayout(new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
+
 			new FloatField(props, "Timestep", &sHairModel.mTimestep, 1.0f, 40.0f, 0.001f);//ms
 			new FloatField(props, "Gravity Y", &sHairModel.mGravity, -10.0f, 10.0f, 1.0f);// m/ss
 			new FloatField(props, "Segment L", &sHairModel.mSegmentLength, 1.0f, 10.0f, 0.01f);//cm
 
-			mTabs[0] = props;
+			mTabs[1] = props;
 			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
 		}
 		
@@ -385,7 +498,7 @@ public:
 			new Label(props, "Tip");
 			(new nanogui::ColorWheel(props, mCanvas->getTipColor()))->setCallback([this](nanogui::Color c) { mCanvas->setTipColor(c); });
 
-			mTabs[1] = props;
+			mTabs[2] = props;
 			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
 		}
 
@@ -397,9 +510,15 @@ public:
 		(new Button(playbackPanel, "Reset"))->setCallback([this]() {this->resetSolver();});
 		(new Button(playbackPanel, "Play/Pause"))->setCallback([this]() {this->RunOrPauseSimulation(); });
 		(new Button(playbackPanel, "Step"))->setCallback([this]() {if (!sRunning) this->step(sSimulationDirty); });
+		/*new Label(playbackPanel, "Steps/frame:");
+		mCanvas->setStepsPerSecLabel(new Label(playbackPanel, "0.0    "));*/
+		new Label(playbackPanel, "Simulation time/step:");
+		mCanvas->setSimtimePerStepLabel(new Label(playbackPanel, "0.0    "));
+		new Label(playbackPanel, "Step:");
+		mCanvas->setStepsLabel(new Label(playbackPanel, "0      "));
 
 		winLay->setAnchor(playbackPanel, AdvancedGridLayout::Anchor(0, 1, 2, 1,nanogui::Alignment::Fill, nanogui::Alignment::Fill));
-
+		 
         performLayout();		
 
 		(mTabChooser->callback())(0);
@@ -423,29 +542,24 @@ public:
     }
 
 	void RunOrPauseSimulation() {
-		sRunning = !sRunning;
-		if (sRunning) {
-			std::thread t([this]() {run(std::ref(this), std::ref(sSimulationDirty), std::ref(sRunning), 17); });
-			t.detach();
-		}
+		mCanvas->RunOrPauseSimulation();
 	}
-	
-	void step(std::atomic<bool>& simDirty){
-		sHairModel.step(sHairPoints);
-		simDirty = true;
+
+	void step(std::atomic<bool> &simDirty) {
+		mCanvas->step(simDirty);
 	}
 
 	void drawGL() { mCanvas->drawGL(); }
 	void resetSolver() { mCanvas->resetSolver(); }
 
 private:
-	static const int mNumTabs = 2;
+	static const int mNumTabs = 3;
     MyGLCanvas *mCanvas;
 	Widget * mTabs[mNumTabs];
 	nanogui::ComboBox * mTabChooser;
 };
 
-void run(ExampleApplication * app, std::atomic<bool>& simDirty, std::atomic<bool>& program_is_running, unsigned int update_interval_millisecs) {
+void run(MyGLCanvas * app, std::atomic<bool>& simDirty, std::atomic<bool>& program_is_running, unsigned int update_interval_millisecs) {
 	const auto wait_duration = std::chrono::milliseconds(update_interval_millisecs);
 	while (program_is_running) {
 		app->step(simDirty);
