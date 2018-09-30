@@ -77,7 +77,9 @@ const double mHalfPI = mPI * 0.5;
 std::atomic<bool> sRunning{ false };
 std::atomic<bool> sSimulationDirty{ false };
 
-HairDoF_Points sHairPoints;
+//HairDoF_PointsAndQuaternions 
+HairDoF_Points sHairDoFs, sHairRoots;
+//HairModel_PBD_Cosserat 
 HairModel_FollowTheLeader sHairModel;
 
 using std::cout;
@@ -142,12 +144,16 @@ public:
 
 		setHair();
 	}
-	void setHairPositions(HairDoF_Points &hair) {
-		auto numPts = hair.mDof.size()/3;
+
+	void setHairPositions(HairDoF &hair) {
+		Eigen::VectorXf& dof = hair.getDoFs();
+		auto vtxSize = hair.vertexSize();
+
+		auto numPts = dof.size() / vtxSize;
 		nanogui::MatrixXf positions(3, numPts);
 
 		for (auto i = 0u; i < numPts; i++)
-			positions.col(i) << hair.mDof[i * 3], hair.mDof[i * 3 + 1], hair.mDof[i * 3 + 2];
+			positions.col(i) << dof[i * vtxSize], dof[i * vtxSize + 1], dof[i * vtxSize + 2];
 
 		mShader.bind();
 		mShader.uploadAttrib("position", positions);
@@ -233,13 +239,16 @@ public:
 	}
 
 	void step(std::atomic<bool>& simDirty) {
+		sHairModel.updateRoots(sHairRoots);
+		sHairRoots.copyRootsToHair(sHairDoFs);
+
 		LARGE_INTEGER frequency;        // ticks per second
 		LARGE_INTEGER t1, t2;           // ticks
 		double elapsedTime;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&t1);
-
-		sHairModel.step(sHairPoints);
+		
+		sHairModel.step(sHairDoFs);
 
 		QueryPerformanceCounter(&t2);
 		float processingTime = (t2.QuadPart - t1.QuadPart) * 1000.0 / frequency.QuadPart;
@@ -257,7 +266,7 @@ public:
 
     virtual void drawGL() override {
 		if (sSimulationDirty) {
-			setHairPositions(sHairPoints);
+			setHairPositions(sHairDoFs);
 		}
 
 		if (sSimulationLog.size() == 0) sSimulationLog.push_back(LogInfo());
@@ -355,10 +364,15 @@ public:
 
 	void resetSolver() {
 		mHair.resetIter();
-		sHairPoints = mHair;
-		sHairPoints.mDofPrev = sHairPoints.mDof;
+		sHairModel.reset();
 
-		setHairPositions(sHairPoints);
+		sHairDoFs = mHair;
+		sHairRoots.copyRootsFromHair(sHairDoFs);
+
+		Eigen::VectorXf& dof = sHairDoFs.getDoFs();
+		Eigen::VectorXf& prevdof = sHairDoFs.getPrevDoFs();
+
+		setHairPositions(sHairDoFs);
 		
 		sSimulationLog.clear();
 		sSimulationLog.push_back(LogInfo());
@@ -392,11 +406,11 @@ class TypeField : public nanogui::Widget {
 public:
 	TypeField(nanogui::Widget *parent, const std::string &label, T *attribute, T min, T max, T scale, MyGLCanvas* canvas = nullptr, void (*callable) (MyGLCanvas *c) = 0) : nanogui::Widget(parent) {
 		setLayout(new nanogui::BoxLayout(nanogui::Orientation::Horizontal, nanogui::Alignment::Fill, 0, 0));
-
 		new nanogui::Label(this, label);
 		auto slider = new nanogui::Slider(this);
 		slider->setRange(std::pair<T, T>(min, max));
 		slider->setValue(*attribute / scale);
+		slider->setFixedWidth(200);
 		auto txtBox = new nanogui::TextBox(this);
 		slider->setCallback([txtBox, attribute, scale, canvas, callable](T v) {
 			std::stringstream stream;
@@ -415,7 +429,7 @@ typedef TypeField<unsigned int> UintField;
 
 class ExampleApplication : public nanogui::Screen {
 public:
-    ExampleApplication() : nanogui::Screen(Eigen::Vector2i(1200, 1000), "Vladimir - Simulation Demo", false) {
+    ExampleApplication() : nanogui::Screen(Eigen::Vector2i(1400, 1000), "Vladimir - Simulation Demo", false) {
         using namespace nanogui;
 
 		auto winLay = new AdvancedGridLayout();
@@ -447,7 +461,6 @@ public:
 		tools->setLayout(tabLay);// new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
 
 		mTabChooser = new ComboBox(tools, { "Hair", "Solver","Display" });
-		//mTabChooser->setFixedHeight(20);
 		mTabChooser->setCallback(
 			[this](int i) {
 				for (auto &tab : this->mTabs) {
@@ -465,8 +478,15 @@ public:
 			Widget *props = new Widget(tools);
 			props->setLayout(new BoxLayout(Orientation::Vertical, Alignment::Fill, 0, 0));
 
-			new UintField(props, "N Hairs (x1000)", &mCanvas->mNumStrands, 1, 100, 1000, mCanvas, staticSetHair);
+			new UintField(props, "N Hairs (x1000)", &mCanvas->mNumStrands, 1, 200, 1000, mCanvas, staticSetHair);
 			new UintField(props, "Points per Hair", &mCanvas->mPointsPerStrand, 2, 100, 1, mCanvas, staticSetHair);
+
+			new FloatField(props, "Rot X frequency", &sHairModel.mRotXfreq, 0, 2.0f, 1.0f);
+			new FloatField(props, "Rot X amplitude", &sHairModel.mRotXamp, 0, 360.0f, 1.0f);
+			new FloatField(props, "Rot Y frequency", &sHairModel.mRotYfreq, 0, 2.0f, 1.0f);
+			new FloatField(props, "Rot Y amplitude", &sHairModel.mRotYamp, 0, 360.0f, 1.0f);
+			new FloatField(props, "Rot Z frequency", &sHairModel.mRotZfreq, 0, 2.0f, 1.0f);
+			new FloatField(props, "Rot Z amplitude", &sHairModel.mRotZamp, 0, 360.0f, 1.0f);
 
 			mTabs[0] = props;
 			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
@@ -479,6 +499,7 @@ public:
 			new FloatField(props, "Timestep", &sHairModel.mTimestep, 1.0f, 40.0f, 0.001f);//ms
 			new FloatField(props, "Gravity Y", &sHairModel.mGravity, -10.0f, 10.0f, 1.0f);// m/ss
 			new FloatField(props, "Segment L", &sHairModel.mSegmentLength, 1.0f, 10.0f, 0.01f);//cm
+			new UintField(props, "Stiffness", &sHairModel.mStiffness, 0, 10, 10);
 
 			mTabs[1] = props;
 			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));
