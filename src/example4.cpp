@@ -77,10 +77,12 @@ const double mHalfPI = mPI * 0.5;
 std::atomic<bool> sRunning{ false };
 std::atomic<bool> sSimulationDirty{ false };
 
-//HairDoF_PointsAndQuaternions 
-HairDoF_Points sHairDoFs, sHairRoots;
-//HairModel_PBD_Cosserat 
-HairModel_FollowTheLeader sHairModel;
+HairDoF_PointsAndQuaternions 
+//HairDoF_Points 
+sHairDoFs, sHairRoots;
+HairModel_PBD_Cosserat 
+//HairModel_FollowTheLeader 
+sHairModel;
 
 using std::cout;
 using std::cerr;
@@ -481,12 +483,12 @@ public:
 			new UintField(props, "N Hairs (x1000)", &mCanvas->mNumStrands, 1, 200, 1000, mCanvas, staticSetHair);
 			new UintField(props, "Points per Hair", &mCanvas->mPointsPerStrand, 2, 100, 1, mCanvas, staticSetHair);
 
-			new FloatField(props, "Rot X frequency", &sHairModel.mRotXfreq, 0, 2.0f, 1.0f);
-			new FloatField(props, "Rot X amplitude", &sHairModel.mRotXamp, 0, 360.0f, 1.0f);
-			new FloatField(props, "Rot Y frequency", &sHairModel.mRotYfreq, 0, 2.0f, 1.0f);
-			new FloatField(props, "Rot Y amplitude", &sHairModel.mRotYamp, 0, 360.0f, 1.0f);
-			new FloatField(props, "Rot Z frequency", &sHairModel.mRotZfreq, 0, 2.0f, 1.0f);
-			new FloatField(props, "Rot Z amplitude", &sHairModel.mRotZamp, 0, 360.0f, 1.0f);
+			new FloatField(props, "Rot X frequency", &sHairModel.mRotXfreq, 0, 1.0f, 1.0f);
+			new FloatField(props, "Rot X amplitude", &sHairModel.mRotXamp, 0, 1.0f, 1.0f);
+			new FloatField(props, "Rot Y frequency", &sHairModel.mRotYfreq, 0, 1.0f, 1.0f);
+			new FloatField(props, "Rot Y amplitude", &sHairModel.mRotYamp, 0, 1.0f, 1.0f);
+			new FloatField(props, "Rot Z frequency", &sHairModel.mRotZfreq, 0, 1.0f, 1.0f);
+			new FloatField(props, "Rot Z amplitude", &sHairModel.mRotZamp, 0, 1.0f, 1.0f);
 
 			mTabs[0] = props;
 			tabLay->setAnchor(props, AdvancedGridLayout::Anchor(0, 1, nanogui::Alignment::Fill, nanogui::Alignment::Minimum));

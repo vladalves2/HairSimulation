@@ -1,6 +1,12 @@
 #include "HairSolver.h"
 #include <iostream>
 
+void collide(Eigen::Map<Eigen::Vector3f> &p) {
+	if (p.norm() < 0.1) {
+		p.normalize();
+		p = p * 0.1f;
+	}
+}
 HairDoF::HairDoF() : mHairRadius(1.0f){}
 
 HairDoF & HairDoF::operator= (const HairGeo&o) {
@@ -50,6 +56,13 @@ void HairDoF::rotateFromPrev(Eigen::Quaternionf &rot) {
 		Eigen::Map<Eigen::Vector3f> src(prevElements.data() + id * elementSize);
 		Eigen::Map<Eigen::Vector3f> dst(elements.data() + id * elementSize);
 		dst = rotMatrix * src;
+
+		if (elementSize == 7) {
+			Eigen::Map<Eigen::Quaternionf> srcq(prevElements.data() + id * elementSize + 3);
+			Eigen::Map<Eigen::Quaternionf> dstq(elements.data() + id * elementSize + 3);
+
+			dstq = rot * srcq;
+		}
 	}
 }
 
@@ -166,6 +179,7 @@ void HairDoF_PointsAndQuaternions::advance(float timestep, float gravity) {
 
 		Eigen::Vector3f p0 = pNow;
 		pNow = pNow + (pNow - pPrev) + accel * (timestep*timestep*0.5f);
+		collide(pNow);
 		pPrev = p0;
 
 		Eigen::Map<Eigen::Quaternionf> qNow(dof.data() + pid * vtxSize + 3);
@@ -221,6 +235,8 @@ void HairDoF_Points::advance(float timestep, float gravity) {
 
 			Eigen::Vector3f p0 = pNow;
 			pNow = pNow + (pNow - pPrev) + accel * (timestep*timestep*0.5f);
+			//collision with sphere of radius 0.1
+			collide(pNow);
 			pPrev = p0;
 		}
 	}
@@ -228,20 +244,19 @@ void HairDoF_Points::advance(float timestep, float gravity) {
 
 void HairModel::reset() {
 	mCurrentTime = 0;
-	mCurrentRootRotation = Eigen::Quaternionf(0, 1, 0, 0);
-	mRootRotation = Eigen::Quaternionf(0, 1, 0, 0);
+	mCurrentRootRotation = Eigen::Quaternionf(1, 0, 0, 0);
+	mRootRotation = Eigen::Quaternionf(1, 0, 0, 0);
 }
 
 void HairModel::updateRoots(HairDoF &roots) {
 	mTransform = ((mRotXfreq * mRotXamp) != 0) || ((mRotYfreq * mRotYamp) != 0) || ((mRotZfreq * mRotZamp) != 0);
 
 	if (mTransform) {
-		float thetaX = (mRotXamp * EIGEN_PI * mRotXfreq * mCurrentTime) / 180.0f;
-		float thetaY = (mRotYamp * EIGEN_PI * mRotYfreq * mCurrentTime) / 180.0f;
-		float thetaZ = (mRotZamp * EIGEN_PI * mRotZfreq * mCurrentTime) / 180.0f;
+		float thetaX = (2 * EIGEN_PI * mRotXamp * sinf(2 * EIGEN_PI * mRotXfreq * mCurrentTime));
+		float thetaY = (2 * EIGEN_PI * mRotYamp * sinf(2 * EIGEN_PI * mRotYfreq * mCurrentTime));
+		float thetaZ = (2 * EIGEN_PI * mRotZamp * sinf(2 * EIGEN_PI * mRotZfreq * mCurrentTime));
 		mRootRotation = Eigen::AngleAxisf(thetaX, Eigen::Vector3f::UnitX()) * Eigen::AngleAxisf(thetaY, Eigen::Vector3f::UnitY())* Eigen::AngleAxisf(thetaZ, Eigen::Vector3f::UnitZ());
-		mCurrentRootRotation.slerp(0.5f, mRootRotation);
-
+		mCurrentRootRotation = mCurrentRootRotation.slerp(0.5f, mRootRotation);
 		roots.rotateFromPrev(mCurrentRootRotation);		
 	}
 
@@ -249,7 +264,7 @@ void HairModel::updateRoots(HairDoF &roots) {
 }
 
 
-HairModel::HairModel() : mTimestep(0.005f), mGravity(-9.81f), mSegmentLength(0.02f), mStiffness(0), mRotXfreq(0), mRotYfreq(0), mRotXamp(0), mRotYamp(0), mCurrentTime(0) {}
+HairModel::HairModel() : mTimestep(0.005f), mGravity(-9.81f), mSegmentLength(0.02f), mStiffness(0), mRotXfreq(0), mRotYfreq(0), mRotZfreq(0), mRotXamp(0), mRotYamp(0), mRotZamp(0), mCurrentTime(0) {}
 
 void HairModel::step(HairDoF &hair) const {	
 	hair.advance(mTimestep, mGravity);
@@ -282,12 +297,13 @@ void HairModel_FollowTheLeader::solve(HairDoF &dof) const {
 			float currentLen = seg.norm();
 			if (currentLen > mSegmentLength) {
 				seg.normalize();
-				B = A + seg * mSegmentLength;
+				B = A + seg * mSegmentLength;				
 
 				if (pid > start + 1) {
 					Eigen::Map<Eigen::Vector3f> APrev(coordsPrev.data() + (pid - 1) * vertexSize);
 					APrev += (B - oldB);
-				}
+				}	
+				collide(B);
 			}
 		}
 	}
@@ -312,8 +328,12 @@ void HairModel_PBD_Cosserat::solveStrand(HairDoF &dof, unsigned int pid, float g
 	Eigen::Vector3f stretchShearStrain = ((B - A) / mSegmentLength - d3);
 	Eigen::Vector3f pointDisp = stretchShearStrain * gammaScale;
 
-	if (type[pid - 1] != 0) A += pointDisp;
+	if (type[pid - 1] != 0) {
+		A += pointDisp;
+		collide(A);
+	}
 	B -= (pointDisp);
+	collide(B);
 
 	Eigen::Quaternionf quatDisp = Eigen::Quaternionf(0.0f, stretchShearStrain.x(), stretchShearStrain.y(), stretchShearStrain.z()) * qB * Eigen::Quaternionf(0,-1,0,0);
 
